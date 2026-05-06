@@ -21,7 +21,6 @@
     #hype-wrapper {
       width: 400px;
       height: 363.6363636px;
-      cursor: pointer;
     }
     #onusanohtml_hype_container {
       width: 440px;
@@ -61,12 +60,12 @@
 
       wrapper.addEventListener('mouseenter', () => {
         const d = getDoc();
-        if (d) d.continueTimelineNamed(timeline);
+        if (d) d.continueTimelineNamed(timeline, d.kDirectionForward);
       });
 
       wrapper.addEventListener('mouseleave', () => {
         const d = getDoc();
-        if (d) d.pauseTimelineNamed(timeline);
+        if (d) d.continueTimelineNamed(timeline, d.kDirectionReverse);
       });
     })();
   </script>
