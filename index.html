@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>yo.</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@700&display=swap" rel="stylesheet">
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      margin: 0;
+      background: #000;
+    }
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/2.1.3/TweenMax.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/105/three.min.js"></script>
+  <script>
+    /* Text texture ----------------------------------------------- */
+    const textCanvas = document.createElement('canvas');
+    const textCtx = textCanvas.getContext('2d');
+    const texture = new THREE.CanvasTexture(textCanvas);
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+
+    function drawText() {
+      const dpr = window.devicePixelRatio || 1;
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      textCanvas.width = Math.max(1, Math.floor(w * dpr));
+      textCanvas.height = Math.max(1, Math.floor(h * dpr));
+      textCtx.setTransform(1, 0, 0, 1, 0, 0);
+      textCtx.scale(dpr, dpr);
+      textCtx.fillStyle = '#000';
+      textCtx.fillRect(0, 0, w, h);
+      textCtx.fillStyle = '#fff';
+      textCtx.font = 'bold 64px "DM Sans", sans-serif';
+      textCtx.textAlign = 'center';
+      textCtx.textBaseline = 'middle';
+      textCtx.fillText('yo.', w / 2, h / 2);
+      texture.needsUpdate = true;
+    }
+
+    /* Plane subject (port of the CodePen, with text texture) ----- */
+    class PlaneSubject {
+      constructor(scene) {
+        this.raycaster = new THREE.Raycaster();
+        this.scene = scene;
+
+        const material = new THREE.ShaderMaterial({
+          vertexShader: `
+            varying vec2 vUv;
+            void main() {
+              vUv = uv;
+              gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+          `,
+          fragmentShader: `
+            precision highp float;
+
+            uniform sampler2D tex;
+            uniform float opacity;
+            uniform float hover;
+            varying vec2 vUv;
+
+            float exponentialInOut(float t) {
+              return t == 0.0 || t == 1.0
+                ? t
+                : t < 0.5
+                  ? +0.5 * pow(2.0, (20.0 * t) - 10.0)
+                  : -0.5 * pow(2.0, 10.0 - (t * 20.0)) + 1.0;
+            }
+
+            void main() {
+              vec2 uv = vUv;
+
+              float zoomLevel = .2;
+              float hoverLevel = exponentialInOut(min(1., (distance(vec2(.5), uv) * hover) + hover));
+              uv *= 1. - zoomLevel * hoverLevel;
+              uv += zoomLevel / 2. * hoverLevel;
+              uv = clamp(uv, 0., 1.);
+
+              vec4 color = texture2D(tex, uv);
+              if (hoverLevel > 0.) {
+                hoverLevel = 1. - abs(hoverLevel - .5) * 2.;
+                // pixel displace
+                uv.y += color.r * hoverLevel * .05;
+                color = texture2D(tex, uv);
+                // RGB shift
+                color.r = texture2D(tex, uv + (hoverLevel) * 0.01).r;
+                color.g = texture2D(tex, uv - (hoverLevel) * 0.01).g;
+              }
+
+              gl_FragColor = mix(vec4(0., 0., 0., opacity), color, opacity);
+            }
+          `,
+          uniforms: {
+            tex:     { type: 't', value: texture },
+            opacity: { type: 'f', value: 1.0 },
+            hover:   { type: 'f', value: 0.0 }
+          }
+        });
+        material.transparent = true;
+
+        // Inner plane: scaled to fill the viewport so text renders at exactly 64px.
+        const mesh = new THREE.Mesh(new THREE.PlaneBufferGeometry(1, 1), material);
+
+        // Wrapper holds the mouse-driven transforms (translate/rotate/scale).
+        const wrapper = new THREE.Group();
+        wrapper.add(mesh);
+        scene.add(wrapper);
+
+        this.material = material;
+        this.mesh = mesh;
+        this.wrapper = wrapper;
+      }
+
+      fitToViewport(camera) {
+        const fovRad = (camera.fov * Math.PI) / 180;
+        const visibleHeight = 2 * Math.tan(fovRad / 2) * camera.position.z;
+        const visibleWidth = visibleHeight * camera.aspect;
+        this.mesh.scale.set(visibleWidth, visibleHeight, 1);
+      }
+
+      mouseHandler(mouse, camera) {
+        const { mesh, wrapper, raycaster, material } = this;
+
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObject(mesh, true);
+
+        TweenMax.to(material.uniforms.hover, 2, {
+          value: intersects.length ? 1 : 0
+        });
+
+        TweenMax.to(wrapper.scale, 0.5, {
+          x: 1 - mouse.y * 0.1,
+          y: 1 - mouse.y * 0.1
+        });
+
+        TweenMax.to(wrapper.position, 0.5, {
+          x: mouse.x
+        });
+
+        TweenMax.to(wrapper.rotation, 0.5, {
+          x: -mouse.y * (Math.PI / 3) * 0.3,
+          y:  mouse.x * (Math.PI / 3) * 0.3
+        });
+      }
+    }
+
+    /* Scene Manager --------------------------------------------- */
+    class SceneManager {
+      constructor(canvas) {
+        this.canvas = canvas;
+        this.clock = new THREE.Clock();
+        this.mouse = new THREE.Vector2();
+
+        this.scene = new THREE.Scene();
+        this.scene.background = new THREE.Color('#000');
+
+        const dpr = window.devicePixelRatio || 1;
+        this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+        this.renderer.setPixelRatio(dpr);
+        this.renderer.setSize(canvas.width, canvas.height, false);
+        this.renderer.gammaInput = true;
+        this.renderer.gammaOutput = true;
+
+        const aspectRatio = canvas.width / canvas.height;
+        this.camera = new THREE.PerspectiveCamera(60, aspectRatio, 1, 100);
+        this.camera.position.z = 8;
+
+        this.subject = new PlaneSubject(this.scene);
+        this.subject.fitToViewport(this.camera);
+      }
+
+      update() {
+        this.renderer.render(this.scene, this.camera);
+      }
+
+      resizeHandler() {
+        const { width, height } = this.canvas;
+        this.camera.aspect = width / height;
+        this.camera.updateProjectionMatrix();
+        this.renderer.setSize(width, height, false);
+        this.subject.fitToViewport(this.camera);
+        drawText();
+      }
+
+      mouseHandler(mousePos) {
+        Object.assign(this.mouse, mousePos);
+        this.subject.mouseHandler(this.mouse, this.camera);
+      }
+    }
+
+    /* Init ------------------------------------------------------- */
+    const canvas = document.getElementById('canvas');
+    let sceneManager;
+
+    const resizeCanvas = () => {
+      canvas.style.width  = '100%';
+      canvas.style.height = '100%';
+      canvas.width  = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+      if (sceneManager) sceneManager.resizeHandler();
+    };
+
+    const mouseHandler = e => {
+      sceneManager.mouseHandler({
+        x: (e.clientX / window.innerWidth) * 2 - 1,
+        y: -(e.clientY / window.innerHeight) * 2 + 1
+      });
+    };
+
+    const start = () => {
+      sceneManager = new SceneManager(canvas);
+      window.addEventListener('resize', resizeCanvas);
+      window.addEventListener('mousemove', mouseHandler);
+      resizeCanvas();
+      const render = () => {
+        requestAnimationFrame(render);
+        sceneManager.update();
+      };
+      render();
+    };
+
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(start);
+    } else {
+      window.addEventListener('load', start);
+    }
+  </script>
+</body>
+</html>
